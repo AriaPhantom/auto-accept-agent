@@ -4537,27 +4537,39 @@ var require_relauncher = __commonJS({
           this.log("CDP flag already present in current process.");
           return { success: true, relaunched: false };
         }
-        this.log("CDP flag missing in current process. Attempting to ensure shortcut is correctly configured...");
-        const status = await this.modifyShortcut();
-        this.log(`Shortcut modification result: ${status}`);
-        if (status === "MODIFIED" || status === "READY") {
-          const ideName = this.getIdeName();
-          const msg = status === "MODIFIED" ? `Auto Accept: Shortcut updated! Please CLOSE and RESTART ${ideName} completely to enable Background Mode.` : `Auto Accept: Shortcut is already configured correctly, but this window isn't using it. Please CLOSE and RESTART ${ideName} completely to apply changes.`;
-          await vscode2.window.showInformationMessage(msg, { modal: true }, "Got it");
-          return { success: true, relaunched: false };
-        } else {
-          this.log(`Failed to ensure shortcut configuration. Status: ${status}`);
-          const ideName = this.getIdeName();
+        this.log("CDP flag missing in current process. Showing platform-specific script...");
+        const ideName = this.getIdeName();
+        const { script, instructions } = await this.getPlatformScriptAndInstructions();
+        if (!script) {
           vscode2.window.showErrorMessage(
-            `Auto Accept: Could not enable background mode automatically. Please add --remote-debugging-port=9000 to your ${ideName} shortcut manually, then restart.`,
+            `Auto Accept: Unsupported platform. Please add --remote-debugging-port=9000 to your ${ideName} shortcut manually, then restart.`,
             "View Help"
-          ).then((selection) => {
-            if (selection === "View Help") {
+          ).then((selection2) => {
+            if (selection2 === "View Help") {
               vscode2.env.openExternal(vscode2.Uri.parse("https://github.com/Antigravity-AI/auto-accept#background-mode-setup"));
             }
           });
+          return { success: false, relaunched: false };
         }
-        return { success: false, relaunched: false };
+        const message = `Auto Accept: CDP flag missing. To enable Background Mode, please run the script for ${ideName} on ${this.platform}.`;
+        const copyButton = "Copy Script to Clipboard";
+        const viewHelpButton = "View Help";
+        const selection = await vscode2.window.showInformationMessage(
+          message,
+          { modal: true, detail: `${instructions}
+
+Script:
+${script}` },
+          copyButton,
+          viewHelpButton
+        );
+        if (selection === copyButton) {
+          await vscode2.env.clipboard.writeText(script);
+          vscode2.window.showInformationMessage("Script copied to clipboard! Please paste it into a terminal and run it, then close and restart your IDE.");
+        } else if (selection === viewHelpButton) {
+          vscode2.env.openExternal(vscode2.Uri.parse("https://github.com/Antigravity-AI/auto-accept#background-mode-setup"));
+        }
+        return { success: true, relaunched: false };
       }
       /**
        * Platform-specific check if the current launch shortcut has the flag
@@ -4567,147 +4579,120 @@ var require_relauncher = __commonJS({
         return args.includes("--remote-debugging-port=9000");
       }
       /**
-       * Modify the primary launch shortcut for the current platform
+       * Get platform-specific script and instructions for enabling CDP
        */
-      async modifyShortcut() {
-        try {
-          if (this.platform === "win32") return await this._modifyWindowsShortcut();
-          if (this.platform === "darwin") return await this._modifyMacOSShortcut() ? "MODIFIED" : "FAILED";
-          if (this.platform === "linux") return await this._modifyLinuxShortcut() ? "MODIFIED" : "FAILED";
-        } catch (e) {
-          this.log(`Modification error: ${e.message}`);
-        }
-        return "FAILED";
-      }
-      async _modifyWindowsShortcut() {
+      async getPlatformScriptAndInstructions() {
         const ideName = this.getIdeName();
-        this.log(`Starting Windows shortcut modification for ${ideName}...`);
-        const script = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = "Continue"
-$WshShell = New-Object -ComObject WScript.Shell
+        const platform = this.platform;
+        if (platform === "win32") {
+          const script = `$WshShell = New-Object -ComObject WScript.Shell
+$DesktopPath = [System.IO.Path]::Combine($env:USERPROFILE, "Desktop")
+$Shortcuts = Get-ChildItem "$DesktopPath\\*.lnk" | Where-Object { $_.Name -like "*${ideName}*" }
 
-$TargetFolders = @(
-    [Environment]::GetFolderPath("Desktop"),
-    [Environment]::GetFolderPath("Programs"),
-    [Environment]::GetFolderPath("CommonPrograms"),
-    [Environment]::GetFolderPath("StartMenu"),
-    [System.IO.Path]::Combine($env:APPDATA, "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar"),
-    [System.IO.Path]::Combine($env:USERPROFILE, "Desktop")
-)
-
-# Search ONLY for the current IDE variant
-$SearchPatterns = @("*${ideName}*")
-
-$anyModified = $false
-$anyReady = $false
-
-foreach ($folder in $TargetFolders) {
-    if (Test-Path $folder) {
-        Write-Output "DEBUG: Searching folder: $folder"
-        foreach ($pattern in $SearchPatterns) {
-            $files = Get-ChildItem -Path $folder -Filter "$pattern.lnk" -Recurse
-            foreach ($file in $files) {
-                Write-Output "DEBUG: Found shortcut: $($file.FullName)"
-                try {
-                    $shortcut = $WshShell.CreateShortcut($file.FullName)
-                    if ($shortcut.Arguments -notlike "*--remote-debugging-port=9000*") {
-                        if ($shortcut.Arguments -match "--remote-debugging-port=\\d+") {
-                            $shortcut.Arguments = $shortcut.Arguments -replace "--remote-debugging-port=\\d+", "--remote-debugging-port=9000"
-                        } else {
-                            $shortcut.Arguments = "--remote-debugging-port=9000 " + $shortcut.Arguments
-                        }
-                        $shortcut.Save()
-                        Write-Output "DEBUG: SUCCESSFULLY MODIFIED: $($file.FullName)"
-                        $anyModified = $true
-                    } else {
-                        Write-Output "DEBUG: Flag already present in: $($file.FullName)"
-                        $anyReady = $true
-                    }
-                } catch {
-                    Write-Output "DEBUG: ERROR modifying $($file.FullName): $($_.Exception.Message)"
-                }
-            }
+if ($Shortcuts.Count -eq 0) {
+    Write-Host "No ${ideName} shortcut found on Desktop. Creating a new one..." -ForegroundColor Yellow
+    $ShortcutPath = "$DesktopPath\\${ideName}.lnk"
+    $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+    $Shortcut.TargetPath = "$env:LOCALAPPDATA\\Programs\\${ideName}\\${ideName}.exe"
+    $Shortcut.Arguments = "--remote-debugging-port=9000 --disable-gpu-driver-bug-workarounds --ignore-gpu-blacklist"
+    $Shortcut.Save()
+    Write-Host "Created new shortcut: $ShortcutPath" -ForegroundColor Green
+} else {
+    foreach ($ShortcutFile in $Shortcuts) {
+        $Shortcut = $WshShell.CreateShortcut($ShortcutFile.FullName)
+        $Args = $Shortcut.Arguments
+        if ($Args -match "--remote-debugging-port=\\d+") {
+            $Shortcut.Arguments = $Args -replace "--remote-debugging-port=\\d+", "--remote-debugging-port=9000"
+        } else {
+            $Shortcut.Arguments = "--remote-debugging-port=9000 " + $Args
         }
+        $Shortcut.Save()
+        Write-Host "Updated $($ShortcutFile.Name) to port 9000" -ForegroundColor Green
     }
+}`;
+          return {
+            script,
+            instructions: `1. Open PowerShell as Administrator
+2. Copy the script above and paste it into PowerShell
+3. Press Enter to run
+4. After the script completes, close and restart ${ideName} completely.`
+          };
+        } else if (platform === "darwin") {
+          const script = `open -n -a "${ideName}" --args --remote-debugging-port=9000 --disable-gpu-driver-bug-workarounds --ignore-gpu-blacklist`;
+          return {
+            script,
+            instructions: `1. Open Terminal
+2. Copy the command above and paste it into Terminal
+3. Press Enter to run
+4. This will launch ${ideName} with the required flag. You can also add the flag to your Dock icon: Right-click ${ideName} in Dock > Options > Keep in Dock, then edit the application's Info.plist.`
+          };
+        } else if (platform === "linux") {
+          const script = `#!/bin/bash
+# Detect desktop environment
+DESKTOP=\${XDG_CURRENT_DESKTOP:-""}
+IDE_NAME="${ideName}"
+IDE_NAME_LOWER=$(echo "$IDE_NAME" | tr '[:upper:]' '[:lower:]')
+
+# Function to modify .desktop file
+modify_desktop_file() {
+    local desktop_file="$1"
+    local backup_file="\${desktop_file}.bak"
+    
+    # Create backup
+    cp "$desktop_file" "$backup_file"
+    
+    # Check if flag already exists
+    if grep -q "--remote-debugging-port=9000" "$desktop_file"; then
+        echo "Flag already present in $desktop_file"
+        return 0
+    fi
+    
+    # Add flag to Exec line
+    sed -i 's|^Exec=.*|& --remote-debugging-port=9000|' "$desktop_file"
+    
+    # Also add flag to TryExec if present
+    if grep -q "^TryExec=" "$desktop_file"; then
+        sed -i 's|^TryExec=.*|& --remote-debugging-port=9000|' "$desktop_file"
+    fi
+    
+    echo "Modified $desktop_file"
+    return 0
 }
 
-if ($anyModified) { Write-Output "RESULT: MODIFIED" } 
-elseif ($anyReady) { Write-Output "RESULT: READY" }
-else { Write-Output "RESULT: NOT_FOUND" }
-`;
-        const result = this._runPowerShell(script);
-        this.log(`PowerShell Output:
-${result}`);
-        if (result.includes("RESULT: MODIFIED")) return "MODIFIED";
-        if (result.includes("RESULT: READY")) return "READY";
-        return "NOT_FOUND";
-      }
-      async _modifyMacOSShortcut() {
-        const ideName = this.getIdeName();
-        const binDir = path2.join(os.homedir(), ".local", "bin");
-        if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
-        const wrapperPath = path2.join(binDir, `${ideName.toLowerCase()}-cdp`);
-        const locations = ["/Applications", path2.join(os.homedir(), "Applications")];
-        const appNames = [`${ideName}.app`, "Cursor.app", "Visual Studio Code.app"];
-        let foundAppPath = "";
-        for (const loc of locations) {
-          for (const name of appNames) {
-            const p = path2.join(loc, name);
-            if (fs.existsSync(p)) {
-              foundAppPath = p;
-              break;
-            }
-          }
-          if (foundAppPath) break;
-        }
-        if (!foundAppPath) return false;
-        const content = `#!/bin/bash
-open -a "${foundAppPath}" --args --remote-debugging-port=9000 "$@"`;
-        fs.writeFileSync(wrapperPath, content, { mode: 493 });
-        this.log(`Created macOS wrapper at ${wrapperPath} for ${foundAppPath}`);
-        return true;
-      }
-      async _modifyLinuxShortcut() {
-        const ideName = this.getIdeName().toLowerCase();
-        const desktopDirs = [
-          path2.join(os.homedir(), ".local", "share", "applications"),
-          "/usr/share/applications",
-          "/usr/local/share/applications"
-        ];
-        let modified = false;
-        for (const dir of desktopDirs) {
-          if (!fs.existsSync(dir)) continue;
-          const files = fs.readdirSync(dir).filter((f) => f.endsWith(".desktop"));
-          for (const file of files) {
-            if (file.includes(ideName) || file.includes("cursor")) {
-              const p = path2.join(dir, file);
-              try {
-                let content = fs.readFileSync(p, "utf8");
-                if (!content.includes("--remote-debugging-port=9000")) {
-                  content = content.replace(/^Exec=(.*)$/m, "Exec=$1 --remote-debugging-port=9000");
-                  const userDir = path2.join(os.homedir(), ".local", "share", "applications");
-                  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
-                  const userPath = path2.join(userDir, file);
-                  fs.writeFileSync(userPath, content);
-                  modified = true;
-                }
-              } catch (e) {
-              }
-            }
-          }
-        }
-        return modified;
-      }
-      _runPowerShell(script) {
-        try {
-          const tempFile = path2.join(os.tmpdir(), `relaunch_${Date.now()}.ps1`);
-          fs.writeFileSync(tempFile, script, "utf8");
-          const result = execSync(`powershell -ExecutionPolicy Bypass -File "${tempFile}"`, { encoding: "utf8" });
-          fs.unlinkSync(tempFile);
-          return result;
-        } catch (e) {
-          return "";
+# Search for .desktop files in common locations
+DESKTOP_DIRS=(
+    "$HOME/.local/share/applications"
+    "/usr/share/applications"
+    "/usr/local/share/applications"
+)
+
+for dir in "\${DESKTOP_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        for file in "$dir"/*.desktop; do
+            if [ -f "$file" ]; then
+                if grep -qi "$IDE_NAME_LOWER" "$file" || grep -qi "cursor" "$file"; then
+                    echo "Found: $file"
+                    modify_desktop_file "$file"
+                fi
+            fi
+        done
+    fi
+done
+
+echo "Script completed. Please close and restart ${ideName}."`;
+          return {
+            script,
+            instructions: `1. Open Terminal
+2. Copy the script above and paste it into Terminal
+3. Make it executable: chmod +x script.sh (if saved as file)
+4. Run the script with bash
+5. After the script completes, close and restart ${ideName} completely.`
+          };
+        } else {
+          return {
+            script: "",
+            instructions: "Unsupported platform. Please manually add --remote-debugging-port=9000 to your IDE shortcut."
+          };
         }
       }
     };
@@ -4746,6 +4731,7 @@ var backgroundModeEnabled = false;
 var BACKGROUND_DONT_SHOW_KEY = "auto-accept-background-dont-show";
 var BACKGROUND_MODE_KEY = "auto-accept-background-mode";
 var VERSION_7_0_KEY = "auto-accept-version-7.0-notification-shown";
+var VERSION_8_6_0_KEY = "auto-accept-version-8.6-notification-shown";
 var RELEASY_PROMO_KEY = "auto-accept-releasy-promo-shown";
 var pollTimer;
 var statsCollectionTimer;
@@ -5439,8 +5425,39 @@ function startProPolling(context) {
   }, 5e3);
 }
 async function showVersionNotification(context) {
-  const hasShown = context.globalState.get(VERSION_7_0_KEY, false);
-  if (hasShown) return;
+  const hasShown8_6 = context.globalState.get(VERSION_8_6_0_KEY, false);
+  if (!hasShown8_6) {
+    const title2 = "\u{1F680} What's new in Auto Accept 8.6.0";
+    const body2 = `Simpler setup. More control.
+
+\u2705 Manual CDP Setup \u2014 Platform-specific scripts give you full control over shortcut configuration
+
+\u{1F4CB} Copy-to-Clipboard \u2014 Easy script transfer to your terminal
+
+\u{1F527} Platform Support \u2014 Windows PowerShell, macOS Terminal, and Linux Bash scripts
+
+\u{1F6E1}\uFE0F Enhanced Security \u2014 No automatic file modification, you run scripts when ready
+
+\u26A1 Same Great Features \u2014 All the Auto Accept functionality you love, now with clearer setup`;
+    const btnDashboard2 = "View Dashboard";
+    const btnGotIt2 = "Got it";
+    await context.globalState.update(VERSION_8_6_0_KEY, true);
+    const selection2 = await vscode.window.showInformationMessage(
+      `${title2}
+
+${body2}`,
+      { modal: true },
+      btnGotIt2,
+      btnDashboard2
+    );
+    if (selection2 === btnDashboard2) {
+      const panel = getSettingsPanel();
+      if (panel) panel.createOrShow(context.extensionUri, context);
+    }
+    return;
+  }
+  const hasShown7_0 = context.globalState.get(VERSION_7_0_KEY, false);
+  if (hasShown7_0) return;
   const title = "\u{1F680} What's new in Auto Accept 7.0";
   const body = `Smarter. Faster. More reliable.
 

@@ -48,8 +48,10 @@ Visual indicators show conversation state:
 ## Quick Start
 
 1. **Install** the extension
-2. **Relaunch** when prompted (one-click)
-3. **Done** — Auto Accept activates automatically
+2. **Enable CDP** when prompted (copy platform-specific script to clipboard)
+3. **Run the script** in your terminal/command prompt
+4. **Restart** your IDE completely
+5. **Done** — Auto Accept activates automatically
 
 The extension runs silently. Check the status bar for `Auto Accept: ON`.
 
@@ -72,7 +74,7 @@ The extension runs silently. Check the status bar for `Auto Accept: ON`.
 ## Requirements
 
 - Antigravity or Cursor IDE
-- One-time relaunch after install
+- Enable remote debugging port (one-time setup via provided scripts)
 
 ---
 

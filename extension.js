@@ -39,6 +39,7 @@ let backgroundModeEnabled = false;
 const BACKGROUND_DONT_SHOW_KEY = 'auto-accept-background-dont-show';
 const BACKGROUND_MODE_KEY = 'auto-accept-background-mode';
 const VERSION_7_0_KEY = 'auto-accept-version-7.0-notification-shown';
+const VERSION_8_6_0_KEY = 'auto-accept-version-8.6-notification-shown';
 const RELEASY_PROMO_KEY = 'auto-accept-releasy-promo-shown';
 
 let pollTimer;
@@ -999,10 +1000,47 @@ function startProPolling(context) {
 }
 
 async function showVersionNotification(context) {
-    const hasShown = context.globalState.get(VERSION_7_0_KEY, false);
-    if (hasShown) return;
+    // Check if 8.6.0 notification has been shown
+    const hasShown8_6 = context.globalState.get(VERSION_8_6_0_KEY, false);
+    if (!hasShown8_6) {
+        // Show 8.6.0 notification
+        const title = "🚀 What's new in Auto Accept 8.6.0";
+        const body = `Simpler setup. More control.
 
-    // Copy for v7.0
+✅ Manual CDP Setup — Platform-specific scripts give you full control over shortcut configuration
+
+📋 Copy-to-Clipboard — Easy script transfer to your terminal
+
+🔧 Platform Support — Windows PowerShell, macOS Terminal, and Linux Bash scripts
+
+🛡️ Enhanced Security — No automatic file modification, you run scripts when ready
+
+⚡ Same Great Features — All the Auto Accept functionality you love, now with clearer setup`;
+        const btnDashboard = "View Dashboard";
+        const btnGotIt = "Got it";
+
+        // Mark as shown immediately to prevent loops/multiple showings
+        await context.globalState.update(VERSION_8_6_0_KEY, true);
+
+        const selection = await vscode.window.showInformationMessage(
+            `${title}\n\n${body}`,
+            { modal: true },
+            btnGotIt,
+            btnDashboard
+        );
+
+        if (selection === btnDashboard) {
+            const panel = getSettingsPanel();
+            if (panel) panel.createOrShow(context.extensionUri, context);
+        }
+        return;
+    }
+
+    // Legacy: Check if 7.0 notification has been shown (for backward compatibility)
+    const hasShown7_0 = context.globalState.get(VERSION_7_0_KEY, false);
+    if (hasShown7_0) return;
+
+    // Show 7.0 notification (only for users who haven't seen any notification)
     const title = "🚀 What's new in Auto Accept 7.0";
     const body = `Smarter. Faster. More reliable.
 
