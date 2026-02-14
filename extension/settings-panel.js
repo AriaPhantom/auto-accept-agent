@@ -1,7 +1,5 @@
 const vscode = require('vscode');
-const { STRIPE_LINKS } = require('./config');
-
-const LICENSE_API = 'https://auto-accept-backend.onrender.com/api';
+const payment = require('./payment-handler');
 
 class SettingsPanel {
     static currentPanel = undefined;
@@ -52,13 +50,18 @@ class SettingsPanel {
 
         this.update();
 
+        // If in prompt mode, start polling for payment completion
+        if (mode === 'prompt') {
+            this.startPolling();
+        }
+
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 
         this.panel.webview.onDidReceiveMessage(
             async (message) => {
                 switch (message.command) {
                     case 'setFrequency':
-                        if (this.isPro()) {
+                        if (payment.hasProAccess()) {
                             await this.context.globalState.update('auto-accept-frequency', message.value);
                             vscode.commands.executeCommand('auto-accept.updateFrequency', message.value);
                         }
@@ -66,11 +69,8 @@ class SettingsPanel {
                     case 'getStats':
                         this.sendStats();
                         break;
-                    case 'getROIStats':
-                        this.sendROIStats();
-                        break;
                     case 'updateBannedCommands':
-                        if (this.isPro()) {
+                        if (payment.hasProAccess()) {
                             await this.context.globalState.update('auto-accept-banned-commands', message.commands);
                             vscode.commands.executeCommand('auto-accept.updateBannedCommands', message.commands);
                         }
@@ -79,10 +79,7 @@ class SettingsPanel {
                         this.sendBannedCommands();
                         break;
                     case 'upgrade':
-                        // Existing upgrade logic (maybe from Settings mode)
-                        // For prompt mode, links are direct <a> tags usually, but if we need logic:
-                        this.openUpgrade(message.promoCode); // Keeps existing logic for legacy/settings
-                        this.startPolling(this.getUserId());
+                        this.startPolling();
                         break;
                     case 'checkPro':
                         this.handleCheckPro();
@@ -91,7 +88,7 @@ class SettingsPanel {
                         await this.handleDismiss();
                         break;
                     case 'cancelSubscription':
-                        await this.handleCancelSubscription();
+                        await payment.cancelSubscription();
                         break;
                 }
             },
@@ -107,114 +104,18 @@ class SettingsPanel {
         this.dispose();
     }
 
-    async handleCancelSubscription() {
-        const userId = this.getUserId();
-
-        vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                title: 'Processing cancellation request...',
-                cancellable: false
-            },
-            async (progress) => {
-                try {
-                    const https = require('https');
-                    const postData = JSON.stringify({ userId });
-
-                    const options = {
-                        hostname: 'auto-accept-backend.onrender.com',
-                        path: '/api/cancel-subscription',
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Content-Length': Buffer.byteLength(postData)
-                        }
-                    };
-
-                    const result = await new Promise((resolve, reject) => {
-                        const req = https.request(options, (res) => {
-                            let data = '';
-                            res.on('data', chunk => data += chunk);
-                            res.on('end', () => {
-                                try {
-                                    resolve({ statusCode: res.statusCode, data: JSON.parse(data) });
-                                } catch (e) {
-                                    resolve({ statusCode: res.statusCode, data: {} });
-                                }
-                            });
-                        });
-                        req.on('error', reject);
-                        req.write(postData);
-                        req.end();
-                    });
-
-                    if (result.statusCode === 200) {
-                        vscode.window.showInformationMessage(
-                            'Subscription cancelled. You will retain Pro access until the end of your billing period.',
-                            'OK'
-                        );
-                    } else {
-                        vscode.window.showErrorMessage(
-                            'Failed to cancel subscription. Please contact support or manage your subscription via Stripe customer portal.',
-                            'Contact Support'
-                        ).then(selection => {
-                            if (selection === 'Contact Support') {
-                                vscode.env.openExternal(vscode.Uri.parse('https://github.com/MunKhin/auto-accept-agent/issues'));
-                            }
-                        });
-                    }
-                } catch (error) {
-                    vscode.window.showErrorMessage(
-                        'Network error. Please try again or contact support.',
-                        'OK'
-                    );
-                }
-            }
-        );
-    }
-
     async handleCheckPro() {
-        const isPro = await this.checkProStatus(this.getUserId());
-        if (isPro) {
-            await this.context.globalState.update('auto-accept-isPro', true);
+        const isProNow = await payment.checkProStatus();
+        if (isProNow) {
+            payment.setProStatus(true);
             vscode.window.showInformationMessage('Auto Accept: Pro status verified!');
             vscode.commands.executeCommand('auto-accept.onPaid');
             this.update();
         } else {
-            // New: Downgrade logic if check fails (e.g. subscription cancelled)
-            await this.context.globalState.update('auto-accept-isPro', false);
+            payment.setProStatus(false);
             vscode.window.showWarningMessage('Pro license not found. Standard limits applied.');
             this.update();
         }
-    }
-
-    isPro() {
-        return this.context.globalState.get('auto-accept-isPro', false);
-    }
-
-    isPlanRecurring() {
-        const plan = this.context.globalState.get('auto-accept-plan', 'lifetime');
-        // Only monthly plans are recurring (can be canceled). Lifetime plans are one-time purchases.
-        return plan === 'monthly' || plan === 'pro';
-    }
-
-    getUserId() {
-        let userId = this.context.globalState.get('auto-accept-userId');
-        if (!userId) {
-            // Generate UUID v4 format
-            userId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-                const r = Math.random() * 16 | 0;
-                const v = c === 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-            });
-            this.context.globalState.update('auto-accept-userId', userId);
-        }
-        return userId;
-    }
-
-    openUpgrade(promoCode) {
-        // Fallback legacy method or used by Settings
-        // We might not need this if we use direct links, but keeping for compatibility
     }
 
     updateMode(mode) {
@@ -229,28 +130,16 @@ class SettingsPanel {
             sessions: 0,
             lastSession: null
         });
-        const isPro = this.isPro();
-        // If not Pro, force display of 300ms
-        const frequency = isPro ? this.context.globalState.get('auto-accept-frequency', 1000) : 300;
+        const proAccess = payment.hasProAccess();
+        // If not Pro/trial, force display of 300ms
+        const frequency = proAccess ? this.context.globalState.get('auto-accept-frequency', 1000) : 300;
 
         this.panel.webview.postMessage({
             command: 'updateStats',
             stats,
             frequency,
-            isPro
+            isPro: payment.isPro()
         });
-    }
-
-    async sendROIStats() {
-        try {
-            const roiStats = await vscode.commands.executeCommand('auto-accept.getROIStats');
-            this.panel.webview.postMessage({
-                command: 'updateROIStats',
-                roiStats
-            });
-        } catch (e) {
-            // ROI stats not available yet
-        }
     }
 
     sendBannedCommands() {
@@ -278,17 +167,21 @@ class SettingsPanel {
         this.panel.webview.html = this.getHtmlContent();
         setTimeout(() => {
             this.sendStats();
-            this.sendROIStats();
         }, 100);
     }
 
     getHtmlContent() {
-        const isPro = this.isPro();
+        const isPro = payment.isPro();
+        const proAccess = payment.hasProAccess();
+        const trialActive = payment.isTrialActive();
+        const trialStarted = payment.hasTrialStarted();
+        const trialDaysLeft = payment.getTrialDaysLeft();
+        const trialExpired = trialStarted && !trialActive && !isPro;
         const isPrompt = this.mode === 'prompt';
-        const userId = this.getUserId();
+        const userId = payment.getUserId();
         const stripeLinks = {
-            MONTHLY: `${STRIPE_LINKS.MONTHLY}?client_reference_id=${userId}`,
-            LIFETIME: `${STRIPE_LINKS.LIFETIME}?client_reference_id=${userId}`
+            MONTHLY: `${payment.STRIPE_LINKS.MONTHLY}?client_reference_id=${userId}`,
+            LIFETIME: `${payment.STRIPE_LINKS.LIFETIME}?client_reference_id=${userId}`
         };
 
         // Premium Design System - Overriding IDE theme
@@ -533,13 +426,40 @@ class SettingsPanel {
 
         if (isPrompt) {
             const ideName = this.currentIDE || 'Antigravity';
+
+            // Trial-first: only show payment links in prompt mode if trial has expired
+            if (trialActive) {
+                return `<!DOCTYPE html>
+                <html>
+                <head><style>${css}</style></head>
+                <body>
+                    <div class="container" style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+                        <div class="prompt-card">
+                            <div style="font-size: 32px; margin-bottom: 20px;">&#9889;</div>
+                            <div class="prompt-title">Pro Trial Active</div>
+                            <div class="prompt-text">
+                                Your trial is active with ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''} remaining.<br/>
+                                All Pro features are unlocked.
+                            </div>
+                        </div>
+                    </div>
+                    <script>
+                        const vscode = acquireVsCodeApi();
+                        function dismiss() {
+                            vscode.postMessage({ command: 'dismissPrompt' });
+                        }
+                    </script>
+                </body>
+                </html>`;
+            }
+
             return `<!DOCTYPE html>
             <html>
             <head><style>${css}</style></head>
             <body>
                 <div class="container" style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
                     <div class="prompt-card">
-                        <div style="font-size: 32px; margin-bottom: 20px;">⏸️</div>
+                        <div style="font-size: 32px; margin-bottom: 20px;">&#9208;&#65039;</div>
                         <div class="prompt-title">Workflow Paused</div>
                         <div class="prompt-text">
                             Your ${ideName} agent is waiting for approval.<br/><br/>
@@ -574,10 +494,32 @@ class SettingsPanel {
                     <div class="subtitle">Multi-agent automation for Antigravity & Cursor</div>
                 </div>
 
-                ${!isPro ? `
+                ${trialActive && !isPro ? `
+                <div class="section" style="background: var(--green-soft); border-color: var(--green); position: relative; overflow: hidden;">
+                    <div class="section-label" style="color: var(--green); margin-bottom: 12px; font-size: 14px;">&#9201; Pro Trial: ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''} remaining</div>
+                    <div style="font-size: 14px; line-height: 1.6; color: rgba(255,255,255,0.9);">
+                        All Pro features are unlocked during your trial. Enjoy!
+                    </div>
+                </div>
+                ` : trialExpired ? `
+                <div class="section" style="background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.3); position: relative; overflow: hidden;">
+                    <div class="section-label" style="color: #ef4444; margin-bottom: 12px; font-size: 14px;">Trial Ended</div>
+                    <div style="font-size: 14px; line-height: 1.6; margin-bottom: 24px; color: rgba(255,255,255,0.9);">
+                        Your Pro trial has expired. Basic auto-accept still works! Upgrade to unlock background mode, custom frequency, and more.
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <a href="${stripeLinks.MONTHLY}" class="btn-primary">
+                            $5 / Month
+                        </a>
+                        <a href="${stripeLinks.LIFETIME}" class="btn-primary" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);">
+                            $29 Lifetime
+                        </a>
+                    </div>
+                </div>
+                ` : !isPro ? `
                 <div class="section" style="background: var(--accent-soft); border-color: var(--accent); position: relative; overflow: hidden;">
-                    <div style="position: absolute; top: -20px; right: -20px; font-size: 80px; opacity: 0.05; transform: rotate(15deg);">🚀</div>
-                    <div class="section-label" style="color: white; margin-bottom: 12px; font-size: 14px;">🔥 Upgrade to Pro</div>
+                    <div style="position: absolute; top: -20px; right: -20px; font-size: 80px; opacity: 0.05; transform: rotate(15deg);">&#128640;</div>
+                    <div class="section-label" style="color: white; margin-bottom: 12px; font-size: 14px;">Upgrade to Pro</div>
                     <div style="font-size: 14px; line-height: 1.6; margin-bottom: 24px; color: rgba(255,255,255,0.9);">
                         Automate up to 5 agents in parallel. Join 500+ devs saving hours every week.
                     </div>
@@ -594,29 +536,29 @@ class SettingsPanel {
 
                 <div class="section" id="performanceSection">
                     <div class="section-label">
-                        <span>⚡ Performance Mode</span>
+                        <span>&#9889; Performance Mode</span>
                         <span class="val-display" id="freqVal" style="color: var(--accent);">...</span>
                     </div>
-                    <div class="${!isPro ? 'locked' : ''}">
+                    <div class="${!proAccess ? 'locked' : ''}">
                         <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 8px;">
                             <span style="font-size: 12px; opacity: 0.5;">Instant</span>
                             <div style="flex: 1;"><input type="range" id="freqSlider" min="200" max="3000" step="100" value="1000"></div>
                             <span style="font-size: 12px; opacity: 0.5;">Battery Saving</span>
                         </div>
                     </div>
-                    ${!isPro ? '<div class="pro-tip">Locked: Pro users get 200ms ultra-low latency mode</div>' : ''}
+                    ${!proAccess ? '<div class="pro-tip">Locked: Pro users get 200ms ultra-low latency mode</div>' : ''}
                 </div>
 
                 <div class="section">
-                    <div class="section-label">🛡️ Safety Rules</div>
+                    <div class="section-label">&#128737;&#65039; Safety Rules</div>
                     <div style="font-size: 13px; opacity: 0.6; margin-bottom: 16px; line-height: 1.5;">
                         Patterns that will NEVER be auto-accepted.
                     </div>
-                    <textarea id="bannedCommandsInput" 
+                    <textarea id="bannedCommandsInput"
                         placeholder="rm -rf /&#10;format c:&#10;del /f /s /q"
-                        ${!isPro ? 'readonly' : ''}></textarea>
-                    
-                    <div class="${!isPro ? 'locked' : ''}" style="display: flex; gap: 12px; margin-top: 20px;">
+                        ${!proAccess ? 'readonly' : ''}></textarea>
+
+                    <div class="${!proAccess ? 'locked' : ''}" style="display: flex; gap: 12px; margin-top: 20px;">
                         <button id="saveBannedBtn" class="btn-primary" style="flex: 2;">
                             Update Rules
                         </button>
@@ -627,9 +569,9 @@ class SettingsPanel {
                     <div id="bannedStatus" style="font-size: 12px; margin-top: 12px; text-align: center; height: 18px;"></div>
                 </div>
 
-                ${isPro && this.isPlanRecurring() ? `
+                ${isPro && payment.isPlanRecurring() ? `
                 <div class="section">
-                    <div class="section-label">💳 SUBSCRIPTION</div>
+                    <div class="section-label">&#128179; SUBSCRIPTION</div>
                     <div style="font-size: 13px; opacity: 0.6; margin-bottom: 16px; line-height: 1.5;">
                         Manage your Auto Accept Pro subscription
                     </div>
@@ -647,20 +589,19 @@ class SettingsPanel {
 
             <script>
                 const vscode = acquireVsCodeApi();
-                
+
                 // --- Polling Logic for Real-time Refresh ---
                 function refreshStats() {
                     vscode.postMessage({ command: 'getStats' });
-                    vscode.postMessage({ command: 'getROIStats' });
                 }
-                
+
                 // Refresh every 5 seconds while panel is open
                 const refreshInterval = setInterval(refreshStats, 5000);
-                
+
                 // --- Event Listeners ---
                 const slider = document.getElementById('freqSlider');
                 const valDisplay = document.getElementById('freqVal');
-                
+
                 if (slider) {
                     slider.addEventListener('input', (e) => {
                          const s = (e.target.value/1000).toFixed(1) + 's';
@@ -680,7 +621,7 @@ class SettingsPanel {
                     saveBannedBtn.addEventListener('click', () => {
                         const lines = bannedInput.value.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
                         vscode.postMessage({ command: 'updateBannedCommands', commands: lines });
-                        bannedStatus.innerText = '✓ Safety Rules Updated';
+                        bannedStatus.innerText = '\\u2713 Safety Rules Updated';
                         bannedStatus.style.color = 'var(--green)';
                         setTimeout(() => { bannedStatus.innerText = ''; }, 3000);
                     });
@@ -690,7 +631,7 @@ class SettingsPanel {
                     resetBannedBtn.addEventListener('click', () => {
                         bannedInput.value = defaultBannedCommands.join('\\n');
                         vscode.postMessage({ command: 'updateBannedCommands', commands: defaultBannedCommands });
-                        bannedStatus.innerText = '✓ Defaults Restored';
+                        bannedStatus.innerText = '\\u2713 Defaults Restored';
                         bannedStatus.style.color = 'var(--accent)';
                         setTimeout(() => { bannedStatus.innerText = ''; }, 3000);
                     });
@@ -707,39 +648,12 @@ class SettingsPanel {
                     });
                 }
 
-                // --- Fancy Count-up Animation ---
-                function animateCountUp(element, target, duration = 1200, suffix = '') {
-                    const currentVal = parseInt(element.innerText.replace(/[^0-9]/g, '')) || 0;
-                    if (currentVal === target && !suffix) return;
-                    
-                    const startTime = performance.now();
-                    function easeOutExpo(t) { return t === 1 ? 1 : 1 - Math.pow(2, -10 * t); }
-                    
-                    function update(currentTime) {
-                        const elapsed = currentTime - startTime;
-                        const progress = Math.min(elapsed / duration, 1);
-                        const current = Math.round(currentVal + (target - currentVal) * easeOutExpo(progress));
-                        element.innerText = current + suffix;
-                        if (progress < 1) requestAnimationFrame(update);
-                    }
-                    requestAnimationFrame(update);
-                }
-                
                 window.addEventListener('message', e => {
                     const msg = e.data;
                     if (msg.command === 'updateStats') {
-                        if (slider && !${!isPro}) {
+                        if (slider && !${!proAccess}) {
                             slider.value = msg.frequency;
                             valDisplay.innerText = (msg.frequency/1000).toFixed(1) + 's';
-                        }
-                    }
-                    if (msg.command === 'updateROIStats') {
-                        const roi = msg.roiStats;
-                        if (roi) {
-                            animateCountUp(document.getElementById('roiClickCount'), roi.clicksThisWeek || 0);
-                            animateCountUp(document.getElementById('roiSessionCount'), roi.sessionsThisWeek || 0);
-                            animateCountUp(document.getElementById('roiBlockedCount'), roi.blockedThisWeek || 0);
-                            document.getElementById('roiTimeSaved').innerText = roi.timeSavedFormatted || '0m';
                         }
                     }
                     if (msg.command === 'updateBannedCommands') {
@@ -767,29 +681,8 @@ class SettingsPanel {
         }
     }
 
-    async checkProStatus(userId) {
-        return new Promise((resolve) => {
-            const https = require('https');
-            https.get(`${LICENSE_API}/verify?userId=${userId}`, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        // Store plan type for subscription management
-                        if (json.plan) {
-                            this.context.globalState.update('auto-accept-plan', json.plan);
-                        }
-                        resolve(json.isPro === true);
-                    } catch (e) {
-                        resolve(false);
-                    }
-                });
-            }).on('error', () => resolve(false));
-        });
-    }
-
-    startPolling(userId) {
+    startPolling() {
+        const userId = payment.getUserId();
         // Poll every 5s for 5 minutes
         let attempts = 0;
         const maxAttempts = 60;
@@ -803,10 +696,10 @@ class SettingsPanel {
                 return;
             }
 
-            const isPro = await this.checkProStatus(userId);
-            if (isPro) {
+            const isProNow = await payment.checkProStatus();
+            if (isProNow) {
                 clearInterval(this.pollTimer);
-                await this.context.globalState.update('auto-accept-isPro', true);
+                payment.setProStatus(true);
                 vscode.window.showInformationMessage('Auto Accept: Pro status verified! Thank you for your support.');
                 this.update(); // Refresh UI
                 vscode.commands.executeCommand('auto-accept.updateFrequency', 1000);

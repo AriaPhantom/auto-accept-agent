@@ -6,7 +6,9 @@
       "Bash(curl -X POST \"https://auto-accept-backend.onrender.com/api/admin/update-subscription\" -H \"Content-Type: application/json\" -d \"{\"\"userId\"\":\"\"user_tqzjraj1imj6qdvjr\"\",\"\"isPro\"\":true,\"\"plan\"\":\"\"lifetime\"\",\"\"adminSecret\"\":\"\"cocqw329hr\\(*y9h328r\"\"}\")",
       "Bash(npm run compile:*)",
       "Bash(npm run package:*)",
-      "Bash(curl -X POST \"https://auto-accept-backend.onrender.com/api/admin/update-subscription\" -H \"Content-Type: application/json\" -d \"{\"\"userId\"\":\"\"user_tqzjraj1imj6qdvjr\"\",\"\"isPro\"\":false,\"\"adminSecret\"\":\"\"cocqw329hr\\(*y9h328r\"\"}\")"
+      "Bash(curl -X POST \"https://auto-accept-backend.onrender.com/api/admin/update-subscription\" -H \"Content-Type: application/json\" -d \"{\"\"userId\"\":\"\"user_tqzjraj1imj6qdvjr\"\",\"\"isPro\"\":false,\"\"adminSecret\"\":\"\"cocqw329hr\\(*y9h328r\"\"}\")",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)"
     ]
   }
 }

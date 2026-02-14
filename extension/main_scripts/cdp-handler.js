@@ -186,24 +186,6 @@ class CDPHandler {
         });
     }
 
-    async getStats() {
-        const stats = { clicks: 0, blocked: 0, fileEdits: 0, terminalCommands: 0 };
-        for (const [id] of this.connections) {
-            try {
-                const res = await this._evaluate(id, 'JSON.stringify(window.__autoAcceptGetStats ? window.__autoAcceptGetStats() : {})');
-                if (res?.result?.value) {
-                    const s = JSON.parse(res.result.value);
-                    stats.clicks += s.clicks || 0;
-                    stats.blocked += s.blocked || 0;
-                    stats.fileEdits += s.fileEdits || 0;
-                    stats.terminalCommands += s.terminalCommands || 0;
-                }
-            } catch (e) { }
-        }
-        return stats;
-    }
-
-    async getSessionSummary() { return this.getStats(); }
     async setFocusState(isFocused) {
         for (const [id] of this.connections) {
             try {
@@ -214,7 +196,6 @@ class CDPHandler {
 
     getConnectionCount() { return this.connections.size; }
     async getAwayActions() { return 0; }
-    async resetStats() { return { clicks: 0, blocked: 0 }; }
     async hideBackgroundOverlay() {
         for (const [id] of this.connections) {
             try {

@@ -26,7 +26,7 @@ Auto Accept eliminates the wait:
 
 ## Features
 
-### Background Mode (Pro)
+### Background Mode
 Run multiple Antigravity tabs simultaneously. Every conversation auto-accepts in the background — no tab-switching required.
 
 ### Dangerous Command Blocking
@@ -54,19 +54,6 @@ Visual indicators show conversation state:
 5. **Done** — Auto Accept activates automatically
 
 The extension runs silently. Check the status bar for `Auto Accept: ON`.
-
----
-
-## Pro Features
-
-| Feature | Free | Pro |
-|---------|------|-----|
-| Auto-accept in active tab | ✅ | ✅ |
-| Background mode (all tabs) | — | ✅ |
-| Custom banned commands | — | ✅ |
-| Adjustable polling speed | — | ✅ |
-| Stuck agent recovery | — | ✅ |
-| Multi-window support | — | ✅ |
 
 
 ---
